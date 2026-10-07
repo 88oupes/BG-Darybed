@@ -205,7 +205,17 @@ export default function App() {
         body: JSON.stringify(payload),
       });
 
-      const result = await response.json();
+      const contentType = response.headers.get('content-type') || '';
+      let result: any = null;
+
+      if (contentType.includes('application/json')) {
+        result = await response.json();
+      } else {
+        const textResp = await response.text();
+        throw new Error(
+          `Réponse inattendue du serveur (${response.status} ${response.statusText}). Détails: ${textResp.slice(0, 150)}`
+        );
+      }
 
       if (!response.ok || !result.success) {
         if (result.errors) {
@@ -213,7 +223,8 @@ export default function App() {
         }
         setServerError(
           result.message ||
-            'Une erreur est survenue lors de l’enregistrement de votre garantie. / حدث خطأ أثناء تسجيل الضمان.'
+            result.error ||
+            'Une erreur est survenue lors de l’enregistrement de votre garantie dans Google Sheets.'
         );
         return;
       }
@@ -295,10 +306,10 @@ export default function App() {
               </span>
 
               <h1 id="confirmation-heading" className="text-2xl sm:text-3xl font-extrabold text-[#34134F] tracking-tight mb-2">
-                Bulletin de Garantie Enregistré
+                Votre bulletin est enregistré
               </h1>
               <p className="font-arabic text-lg text-[#61218B] mb-6" dir="rtl">
-                تم تسجيل بطاقة الضمان الرسمية في قاعدة بيانات داري
+                تم تسجيل بطاقة الضمان بنجاح في Google Sheets
               </p>
 
               {/* Reference Card */}
