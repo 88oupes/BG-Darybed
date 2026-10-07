@@ -1,0 +1,86 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --font-latin: 'Louis George Café', 'Louis George Cafe', 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+    --font-arabic: 'PNU', 'Noto Sans Arabic', 'Segoe UI', Tahoma, sans-serif;
+    --color-dary-violet: #61218B;
+    --color-dary-violet-profond: #34134F;
+    --color-dary-ivoire: #F7F2EB;
+    --color-dary-lavande: #EDE4F2;
+    --color-dary-gris: #6F7072;
+    --color-dary-encre: #292331;
+  }
+
+  body {
+    font-family: var(--font-latin);
+    background-color: var(--color-dary-ivoire);
+    color: var(--color-dary-encre);
+    overflow-x: hidden;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-latin);
+    font-weight: 700;
+  }
+}
+
+.font-arabic {
+  font-family: var(--font-arabic);
+}
+
+.font-latin {
+  font-family: var(--font-latin);
+}
+
+/* Custom scrollbar and animations */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #EDE4F2;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #A882C7;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #61218B;
+}
+
+/* Dary Card & Input based on Graphic Charter */
+.dary-card {
+  background: #FFFFFF;
+  border: 1px solid #EDE4F2;
+  box-shadow: 0 10px 25px -5px rgba(52, 19, 79, 0.06), 0 8px 10px -6px rgba(52, 19, 79, 0.03);
+}
+
+.dary-input {
+  transition: all 0.2s ease-in-out;
+  border: 1.5px solid #EDE4F2;
+}
+
+.dary-input:focus {
+  border-color: #61218B;
+  box-shadow: 0 0 0 3px rgba(97, 33, 139, 0.15);
+  outline: none;
+}
+
+.dary-input:disabled {
+  background-color: #F7F2EB;
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+/* Bilingual layout helpers */
+.bilingual-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  width: 100%;
+}

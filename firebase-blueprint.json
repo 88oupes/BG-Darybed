@@ -1,0 +1,68 @@
+{
+  "entities": {
+    "Warranty": {
+      "title": "Warranty",
+      "description": "Bulletin de garantie officiel Dary pour matelas ou salon",
+      "type": "object",
+      "properties": {
+        "reference": {
+          "type": "string",
+          "description": "Numéro de référence unique de garantie"
+        },
+        "nom": {
+          "type": "string",
+          "description": "Nom de famille de l'acheteur"
+        },
+        "prenom": {
+          "type": "string",
+          "description": "Prénom de l'acheteur"
+        },
+        "telephone": {
+          "type": "string",
+          "description": "Numéro de téléphone marocain de contact"
+        },
+        "email": {
+          "type": "string",
+          "description": "Adresse email de l'acheteur"
+        },
+        "ville": {
+          "type": "string",
+          "description": "Ville d'achat parmi les 52 villes du catalogue"
+        },
+        "type": {
+          "type": "string",
+          "enum": ["matelas", "salon"],
+          "description": "Type de produit couvert par la garantie"
+        },
+        "modele": {
+          "type": "string",
+          "description": "Modèle de matelas (Feelsoft Hr+, Feelsoft Hr, Feelsoft Confort, Consoft 33, YARA)"
+        },
+        "dimensions": {
+          "type": "string",
+          "description": "Dimensions du matelas conformes au catalogue"
+        },
+        "consent": {
+          "type": "boolean",
+          "description": "Acceptation des conditions de garantie"
+        },
+        "status": {
+          "type": "string",
+          "description": "Statut de la garantie (active)"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Date et heure de création de la garantie"
+        }
+      },
+      "required": ["reference", "nom", "prenom", "telephone", "email", "ville", "type", "consent", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/warranties/{warrantyId}": {
+      "schema": "#/entities/Warranty",
+      "description": "Collection sécurisée contenant les bulletins d'enregistrement de garantie Dary"
+    }
+  }
+}

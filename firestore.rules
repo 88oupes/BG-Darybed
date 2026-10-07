@@ -1,0 +1,14 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Interdiction stricte de tout accès direct depuis le navigateur client.
+    // L'enregistrement et la validation des garanties s'effectuent exclusivement
+    // côté serveur via l'API sécurisée Node.js avec identité autorisée.
+    match /warranties/{warrantyId} {
+      allow read, write: if false;
+    }
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

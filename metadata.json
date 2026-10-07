@@ -1,0 +1,6 @@
+{
+  "name": "Dary - Enregistrement de Garantie",
+  "description": "Portail officiel d'activation et d'enregistrement de garantie pour matelas et salons Dary.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
