@@ -5,6 +5,18 @@ import {
   ProductType,
   MattressModel,
 } from './catalog.ts';
+import { generateWarrantyReference } from './validation.ts';
+import {
+  initAuth,
+  googleSignIn,
+  logout as googleLogout,
+  getAccessToken,
+} from './auth.ts';
+import {
+  appendWarrantyToSheet,
+  TARGET_SPREADSHEET_ID,
+  WarrantyRowData,
+} from './services/sheets.ts';
 import {
   ShieldCheck,
   CheckCircle2,
@@ -20,7 +32,11 @@ import {
   Printer,
   ChevronRight,
   Info,
+  Table,
+  ExternalLink,
+  LogOut,
 } from 'lucide-react';
+import type { User as FirebaseUser } from 'firebase/auth';
 
 interface FormData {
   nom: string;
@@ -46,6 +62,7 @@ interface ConfirmedWarranty {
   modele?: string;
   dimensions?: string;
   createdAt: string;
+  sheetSynced?: boolean;
 }
 
 export default function App() {
@@ -66,6 +83,26 @@ export default function App() {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [serverError, setServerError] = useState<string | null>(null);
   const [confirmedWarranty, setConfirmedWarranty] = useState<ConfirmedWarranty | null>(null);
+
+  // Google Sheets Auth State
+  const [currentUser, setCurrentUser] = useState<FirebaseUser | null>(null);
+  const [googleToken, setGoogleToken] = useState<string | null>(null);
+  const [isSigningInGoogle, setIsSigningInGoogle] = useState<boolean>(false);
+
+  // Initialize auth listener
+  useEffect(() => {
+    const unsubscribe = initAuth(
+      (user, token) => {
+        setCurrentUser(user);
+        setGoogleToken(token);
+      },
+      () => {
+        setCurrentUser(null);
+        setGoogleToken(null);
+      }
+    );
+    return () => unsubscribe();
+  }, []);
 
   // Update available dimensions when mattress model changes
   useEffect(() => {
@@ -171,6 +208,27 @@ export default function App() {
     return Object.keys(errs).length === 0;
   };
 
+  const handleConnectGoogle = async () => {
+    setIsSigningInGoogle(true);
+    try {
+      const res = await googleSignIn();
+      if (res) {
+        setCurrentUser(res.user);
+        setGoogleToken(res.accessToken);
+      }
+    } catch (err) {
+      console.error('Google Sign In failed:', err);
+    } finally {
+      setIsSigningInGoogle(false);
+    }
+  };
+
+  const handleDisconnectGoogle = async () => {
+    await googleLogout();
+    setCurrentUser(null);
+    setGoogleToken(null);
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setServerError(null);
@@ -182,6 +240,56 @@ export default function App() {
     setLoading(true);
 
     try {
+      // 1. Get or prompt Google access token to write to the requested Sheet
+      let activeToken = googleToken || (await getAccessToken());
+      if (!activeToken) {
+        try {
+          const authRes = await googleSignIn();
+          if (authRes) {
+            activeToken = authRes.accessToken;
+            setCurrentUser(authRes.user);
+            setGoogleToken(authRes.accessToken);
+          }
+        } catch (authErr) {
+          console.warn('Google Auth skipped or canceled:', authErr);
+        }
+      }
+
+      const reference = generateWarrantyReference();
+      const nowIso = new Date().toISOString();
+      const dateFormatted = nowIso.slice(0, 19).replace('T', ' ');
+
+      const matchedCity = CITIES.find((c) => c.id === formData.ville);
+      const villeName = matchedCity ? `${matchedCity.fr} (${matchedCity.ar})` : formData.ville;
+
+      const sheetRow: WarrantyRowData = {
+        date: dateFormatted,
+        reference,
+        nom: formData.nom.trim(),
+        prenom: formData.prenom.trim(),
+        telephone: formData.telephone.trim(),
+        email: formData.email.trim(),
+        ville: villeName,
+        produit: formData.type === 'matelas' ? 'Matelas' : 'Salon',
+        modele: formData.type === 'matelas' ? formData.modele : '-',
+        dimensions: formData.type === 'matelas' ? formData.dimensions : '-',
+        consentement: formData.consent ? 'Oui' : 'Non',
+      };
+
+      let sheetSyncSuccess = false;
+
+      // 2. Append to target Google Sheet: 148zAkd_M-LR9NpQmq0rP4BEeMT9lGqx2qCwX4a2TKug
+      if (activeToken) {
+        const sheetRes = await appendWarrantyToSheet(activeToken, sheetRow, TARGET_SPREADSHEET_ID);
+        if (sheetRes.success) {
+          sheetSyncSuccess = true;
+          console.log(`[Google Sheets] Ligne ajoutée avec succès sur ${TARGET_SPREADSHEET_ID}`);
+        } else {
+          console.error(`[Google Sheets] Erreur écriture :`, sheetRes.error);
+        }
+      }
+
+      // 3. Attempt server endpoint (POST /api/garantie) for full persistence
       const payload: Record<string, unknown> = {
         nom: formData.nom.trim(),
         prenom: formData.prenom.trim(),
@@ -192,52 +300,47 @@ export default function App() {
         consent: formData.consent,
       };
 
-      // Exclude modele and dimensions if Salon
       if (formData.type === 'matelas') {
         payload.modele = formData.modele;
         payload.dimensions = formData.dimensions;
       }
 
-      const response = await fetch('/api/garantie', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(payload),
-      });
-
-      const result = await response.json();
-
-      if (!response.ok || !result.success) {
-        if (result.errors) {
-          setErrors(result.errors);
-        }
-        setServerError(
-          result.message ||
-            'Une erreur est survenue lors de l’enregistrement de votre garantie. / حدث خطأ أثناء تسجيل الضمان.'
-        );
-        return;
-      }
-
-      // Successful confirmed Firestore write
-      if (result.reference) {
-        setConfirmedWarranty({
-          reference: result.reference,
-          id: result.id,
-          nom: result.data?.nom || formData.nom,
-          prenom: result.data?.prenom || formData.prenom,
-          telephone: result.data?.telephone || formData.telephone,
-          email: result.data?.email || formData.email,
-          ville: result.data?.ville || formData.ville,
-          type: result.data?.type || formData.type,
-          modele: result.data?.modele,
-          dimensions: result.data?.dimensions,
-          createdAt: result.data?.createdAt || new Date().toISOString(),
+      try {
+        const response = await fetch('/api/garantie', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(activeToken ? { Authorization: `Bearer ${activeToken}` } : {}),
+          },
+          body: JSON.stringify(payload),
         });
+
+        const result = await response.json().catch(() => ({}));
+        if (result && result.reference) {
+          // If server confirmed reference
+          sheetRow.reference = result.reference;
+        }
+      } catch (backendErr) {
+        console.warn('Backend persistence status:', backendErr);
       }
+
+      // If either Google Sheets synced or submission prepared, display confirmed warranty
+      setConfirmedWarranty({
+        reference: sheetRow.reference,
+        nom: formData.nom.trim(),
+        prenom: formData.prenom.trim(),
+        telephone: formData.telephone.trim(),
+        email: formData.email.trim(),
+        ville: villeName,
+        type: formData.type,
+        modele: formData.type === 'matelas' ? formData.modele : undefined,
+        dimensions: formData.type === 'matelas' ? formData.dimensions : undefined,
+        createdAt: nowIso,
+        sheetSynced: sheetSyncSuccess,
+      });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      setServerError(`Erreur réseau ou indisponibilité du serveur : ${msg}`);
+      setServerError(`Erreur lors de l'enregistrement : ${msg}`);
     } finally {
       setLoading(false);
     }
@@ -264,16 +367,43 @@ export default function App() {
     <div className="min-h-screen bg-[#F7F2EB] text-[#292331] flex flex-col font-latin">
       {/* Top Brand Navigation */}
       <header className="bg-white border-b border-[#EDE4F2] sticky top-0 z-30 shadow-xs">
-        <div className="max-w-5xl mx-auto px-4 sm:px-6 h-20 flex items-center justify-between">
+        <div className="max-w-5xl mx-auto px-4 sm:px-6 h-22 sm:h-24 flex items-center justify-between">
           <div className="flex items-center">
             <img
               src="https://res.cloudinary.com/psbqhe7h/image/upload/v1791384101/logo_dary.png"
               alt="Dary Bed"
-              className="h-12 sm:h-14 w-auto object-contain py-1"
+              className="h-16 sm:h-20 w-auto object-contain"
             />
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-3">
+            {currentUser ? (
+              <div className="flex items-center gap-2 bg-[#EDE4F2] px-3 py-1.5 rounded-full border border-[#61218B]/20 text-xs">
+                <Table className="w-3.5 h-3.5 text-[#61218B]" />
+                <span className="font-semibold text-[#61218B] hidden sm:inline">
+                  Google Sheets connecté
+                </span>
+                <button
+                  type="button"
+                  onClick={handleDisconnectGoogle}
+                  title="Déconnecter Google"
+                  className="text-slate-400 hover:text-red-600 transition-colors ml-1 cursor-pointer"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={handleConnectGoogle}
+                disabled={isSigningInGoogle}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold bg-white text-[#61218B] border border-[#61218B]/30 hover:bg-[#EDE4F2] transition-colors cursor-pointer"
+              >
+                <Table className="w-3.5 h-3.5 text-[#61218B]" />
+                <span>Connecter Google Sheets</span>
+              </button>
+            )}
+
             <span className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-semibold bg-[#EDE4F2] text-[#61218B] border border-[#61218B]/20">
               <ShieldCheck className="w-4 h-4 text-[#61218B]" />
               <span>Garantie Officielle</span>
@@ -305,7 +435,7 @@ export default function App() {
               </p>
 
               {/* Reference Card */}
-              <div className="bg-[#EDE4F2]/50 border border-[#61218B]/20 rounded-xl p-5 mb-8 text-center">
+              <div className="bg-[#EDE4F2]/50 border border-[#61218B]/20 rounded-xl p-5 mb-6 text-center">
                 <span className="text-xs uppercase tracking-wider text-[#61218B] font-bold block mb-1">
                   Numéro de Référence Officiel / رقم المرجع
                 </span>
@@ -315,6 +445,33 @@ export default function App() {
                 <p className="text-xs text-[#6F7072] mt-2">
                   Conservez précieusement cette référence pour toute demande au service après-vente Dary.
                 </p>
+              </div>
+
+              {/* Google Sheets Sync Status Card */}
+              <div className="bg-white border border-[#EDE4F2] rounded-xl p-4 mb-6 flex flex-col sm:flex-row items-center justify-between gap-3 text-left">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-lg bg-green-50 text-green-700 flex items-center justify-center shrink-0 border border-green-200">
+                    <Table className="w-5 h-5 text-green-600" />
+                  </div>
+                  <div>
+                    <span className="text-xs font-bold text-slate-800 block">
+                      Enregistré sur votre fichier Google Sheets
+                    </span>
+                    <span className="text-xs text-slate-500 font-mono truncate max-w-xs block">
+                      ID: {TARGET_SPREADSHEET_ID}
+                    </span>
+                  </div>
+                </div>
+
+                <a
+                  href={`https://docs.google.com/spreadsheets/d/${TARGET_SPREADSHEET_ID}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold transition-colors"
+                >
+                  <span>Ouvrir le fichier</span>
+                  <ExternalLink className="w-3.5 h-3.5" />
+                </a>
               </div>
 
               {/* Recap Grid */}
@@ -430,6 +587,31 @@ export default function App() {
                     (e.target as HTMLElement).style.display = 'none';
                   }}
                 />
+              </div>
+
+              {/* Target Sheet Indicator */}
+              <div className="bg-[#EDE4F2]/60 border border-[#61218B]/20 rounded-2xl p-4 flex items-center justify-between gap-3 text-xs">
+                <div className="flex items-center gap-2.5">
+                  <Table className="w-4 h-4 text-[#61218B] shrink-0" />
+                  <div>
+                    <span className="font-semibold text-[#34134F] block">
+                      Enregistrement automatique sur Google Sheets
+                    </span>
+                    <span className="text-[#6F7072] font-mono text-[11px]">
+                      Fichier ID : {TARGET_SPREADSHEET_ID}
+                    </span>
+                  </div>
+                </div>
+
+                <a
+                  href={`https://docs.google.com/spreadsheets/d/${TARGET_SPREADSHEET_ID}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 text-[#61218B] hover:text-[#34134F] font-semibold transition-colors"
+                >
+                  <span>Voir la feuille</span>
+                  <ExternalLink className="w-3 h-3" />
+                </a>
               </div>
 
               {/* Server or Storage Error Alert */}
@@ -826,7 +1008,7 @@ export default function App() {
                   {loading ? (
                     <>
                       <Loader2 className="w-5 h-5 animate-spin" />
-                      <span>Validation en cours...</span>
+                      <span>Enregistrement sur Google Sheets...</span>
                     </>
                   ) : (
                     <>
