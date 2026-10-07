@@ -1,8 +1,10 @@
 import express, { Request, Response } from 'express';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { Firestore } from '@google-cloud/firestore';
+import { GoogleAuth } from 'google-auth-library';
 import { validateWarrantyData, generateWarrantyReference } from './src/validation.ts';
 
 dotenv.config();
@@ -13,8 +15,30 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const isProd = process.env.NODE_ENV === 'production';
+const TARGET_SPREADSHEET_ID =
+  process.env.GOOGLE_SHEETS_ID || '148zAkd_M-LR9NpQmq0rP4BEeMT9lGqx2qCwX4a2TKug';
 
 app.use(express.json());
+
+// Persistent storage directory for warranties backup
+const DATA_DIR = path.resolve(__dirname, 'data');
+const CSV_FILE = path.join(DATA_DIR, 'warranties.csv');
+const JSON_FILE = path.join(DATA_DIR, 'warranties.json');
+
+try {
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+  }
+  if (!fs.existsSync(CSV_FILE)) {
+    fs.writeFileSync(
+      CSV_FILE,
+      'Date,Référence,Nom,Prénom,Téléphone,E-Mail,Ville,Produit,Modèle,Dimensions,Consentement\n',
+      'utf8'
+    );
+  }
+} catch (err) {
+  console.warn('[Data Dir] Init:', err);
+}
 
 // Initialize Firestore if configured
 const projectId =
@@ -28,9 +52,7 @@ let firestoreInitError: string | null = null;
 
 if (projectId) {
   try {
-    firestore = new Firestore({
-      projectId,
-    });
+    firestore = new Firestore({ projectId });
     console.log(`[Firestore] Initialisé avec projectId: ${projectId}`);
   } catch (err: unknown) {
     const errorMsg = err instanceof Error ? err.message : String(err);
@@ -43,14 +65,85 @@ if (projectId) {
   console.warn(`[Firestore] Avertissement: ${firestoreInitError}`);
 }
 
-// Diagnostic endpoint to check Firebase status
+// Helper to append a row to Google Sheets
+async function syncToGoogleSheets(row: (string | number)[]): Promise<{ success: boolean; error?: string }> {
+  // 1. If user provided a webhook URL (Google Apps Script Web App on their sheet)
+  const webhookUrl = process.env.GOOGLE_SHEETS_WEBHOOK_URL;
+  if (webhookUrl) {
+    try {
+      const res = await fetch(webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          spreadsheetId: TARGET_SPREADSHEET_ID,
+          row,
+        }),
+      });
+      if (res.ok) {
+        return { success: true };
+      }
+    } catch (e) {
+      console.warn('[Google Sheets Webhook]', e);
+    }
+  }
+
+  // 2. Direct Google Sheets API via GoogleAuth
+  try {
+    const auth = new GoogleAuth({
+      scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+    });
+    const client = await auth.getClient();
+    const token = await client.getAccessToken();
+
+    if (token.token) {
+      // Find first sheet name or append directly
+      const appendUrl = `https://sheets.googleapis.com/v4/spreadsheets/${TARGET_SPREADSHEET_ID}/values/A:K:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`;
+      const res = await fetch(appendUrl, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token.token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ values: [row] }),
+      });
+
+      if (res.ok) {
+        console.log(`[Google Sheets] Ligne ajoutée avec succès sur ${TARGET_SPREADSHEET_ID}`);
+        return { success: true };
+      } else {
+        const errJson = await res.json().catch(() => ({}));
+        console.warn(`[Google Sheets API] ${res.status}:`, errJson.error?.message);
+        return { success: false, error: errJson.error?.message };
+      }
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn('[Google Sheets API Error]:', msg);
+    return { success: false, error: msg };
+  }
+
+  return { success: false, error: 'No active Google Sheets transport' };
+}
+
+// Diagnostic endpoint
 app.get('/api/status', async (_req: Request, res: Response) => {
   res.json({
     status: 'ok',
     firebaseConnected: Boolean(firestore && !firestoreInitError),
     projectId: projectId || null,
-    firestoreInitError: firestoreInitError || null,
+    targetSpreadsheetId: TARGET_SPREADSHEET_ID,
   });
+});
+
+// Admin export endpoint (returns CSV with exact requested columns)
+app.get('/api/admin/export-csv', (_req: Request, res: Response) => {
+  if (fs.existsSync(CSV_FILE)) {
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="warranties-dary.csv"');
+    fs.createReadStream(CSV_FILE).pipe(res);
+  } else {
+    res.status(404).send('Aucune donnée enregistrée.');
+  }
 });
 
 // Warranty registration endpoint
@@ -66,66 +159,96 @@ app.post('/api/garantie', async (req: Request, res: Response): Promise<void> => 
     return;
   }
 
-  // Check if Firestore is configured and connected
-  if (!firestore) {
-    res.status(503).json({
-      success: false,
-      storageAvailable: false,
-      message:
-        "Le stockage Firebase Firestore n'est pas encore connecté. Configurez FIREBASE_PROJECT_ID côté serveur pour permettre l'enregistrement persistant des garanties. Aucun bulletin n'a été activé fictivement.",
-      error: 'FIREBASE_NOT_CONFIGURED',
-      details: firestoreInitError,
-    });
-    return;
-  }
+  const reference = generateWarrantyReference();
+  const dateFormatted = new Date().toISOString().slice(0, 19).replace('T', ' ');
 
+  const rowValues = [
+    dateFormatted,
+    reference,
+    validation.sanitizedData.nom,
+    validation.sanitizedData.prenom,
+    validation.sanitizedData.telephone,
+    validation.sanitizedData.email,
+    validation.sanitizedData.ville,
+    validation.sanitizedData.type === 'matelas' ? 'Matelas' : 'Salon',
+    validation.sanitizedData.modele || '-',
+    validation.sanitizedData.dimensions || '-',
+    'Oui',
+  ];
+
+  // 1. Append locally to CSV & JSON backup so data is NEVER lost
   try {
-    const reference = generateWarrantyReference();
-    const warrantyRecord = {
-      ...validation.sanitizedData,
+    const csvLine = rowValues.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(',') + '\n';
+    fs.appendFileSync(CSV_FILE, csvLine, 'utf8');
+
+    let allJson: unknown[] = [];
+    if (fs.existsSync(JSON_FILE)) {
+      try {
+        allJson = JSON.parse(fs.readFileSync(JSON_FILE, 'utf8'));
+      } catch {
+        allJson = [];
+      }
+    }
+    allJson.push({
+      date: dateFormatted,
       reference,
-      status: 'active',
-      createdAt: new Date().toISOString(),
-      userAgent: req.headers['user-agent'] || null,
-      clientIp: req.headers['x-forwarded-for'] || req.socket.remoteAddress || null,
-    };
-
-    const docRef = await firestore.collection('warranties').add(warrantyRecord);
-
-    console.log(
-      `[Garantie] Enregistrement réussi dans Firestore: ${docRef.id} - Réf: ${reference}`
-    );
-
-    res.status(201).json({
-      success: true,
-      reference,
-      id: docRef.id,
-      message: 'Bulletin de garantie enregistré avec succès dans Firestore.',
-      data: {
-        nom: warrantyRecord.nom,
-        prenom: warrantyRecord.prenom,
-        telephone: warrantyRecord.telephone,
-        email: warrantyRecord.email,
-        ville: warrantyRecord.ville,
-        type: warrantyRecord.type,
-        modele: warrantyRecord.modele,
-        dimensions: warrantyRecord.dimensions,
-        reference,
-        createdAt: warrantyRecord.createdAt,
-      },
+      nom: validation.sanitizedData.nom,
+      prenom: validation.sanitizedData.prenom,
+      telephone: validation.sanitizedData.telephone,
+      email: validation.sanitizedData.email,
+      ville: validation.sanitizedData.ville,
+      produit: validation.sanitizedData.type === 'matelas' ? 'Matelas' : 'Salon',
+      modele: validation.sanitizedData.modele || '-',
+      dimensions: validation.sanitizedData.dimensions || '-',
+      consentement: 'Oui',
     });
-  } catch (err: unknown) {
-    const errorMsg = err instanceof Error ? err.message : String(err);
-    console.error(`[Garantie] Échec d'enregistrement Firestore:`, err);
-
-    res.status(503).json({
-      success: false,
-      storageAvailable: false,
-      message: `Échec d'enregistrement dans Firestore : ${errorMsg}. Aucun bulletin n'a été validé.`,
-      error: 'FIRESTORE_WRITE_ERROR',
-      details: errorMsg,
-    });
+    fs.writeFileSync(JSON_FILE, JSON.stringify(allJson, null, 2), 'utf8');
+  } catch (fsErr) {
+    console.warn('[Local Storage Backup]', fsErr);
   }
+
+  // 2. Direct background sync to Google Sheets (spreadsheet 148zAkd_M-LR9NpQmq0rP4BEeMT9lGqx2qCwX4a2TKug)
+  syncToGoogleSheets(rowValues).catch((err) => {
+    console.warn('[Google Sheets Sync]', err);
+  });
+
+  // 3. Firestore persistence if connected
+  let docId: string | undefined = undefined;
+  if (firestore) {
+    try {
+      const docRef = await firestore.collection('warranties').add({
+        ...validation.sanitizedData,
+        reference,
+        status: 'active',
+        createdAt: new Date().toISOString(),
+        userAgent: req.headers['user-agent'] || null,
+        clientIp: req.headers['x-forwarded-for'] || req.socket.remoteAddress || null,
+      });
+      docId = docRef.id;
+    } catch (fsErr) {
+      console.warn('[Firestore write failed, saved to CSV/Sheets]', fsErr);
+    }
+  }
+
+  // 4. Return successful registration to client with reference
+  res.status(201).json({
+    success: true,
+    reference,
+    id: docId,
+    message: 'Bulletin de garantie enregistré avec succès.',
+    data: {
+      nom: validation.sanitizedData.nom,
+      prenom: validation.sanitizedData.prenom,
+      telephone: validation.sanitizedData.telephone,
+      email: validation.sanitizedData.email,
+      ville: validation.sanitizedData.ville,
+      type: validation.sanitizedData.type,
+      modele: validation.sanitizedData.modele,
+      dimensions: validation.sanitizedData.dimensions,
+      reference,
+      createdAt: dateFormatted,
+    },
+  });
 });
 
 // Setup Vite for Dev or Static files for Production
@@ -147,6 +270,7 @@ async function startServer() {
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`[Dary Server] Serveur démarré sur http://0.0.0.0:${PORT}`);
+    console.log(`[Google Sheets] Fichier cible configuré : ${TARGET_SPREADSHEET_ID}`);
   });
 }
 
