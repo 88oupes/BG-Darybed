@@ -45,13 +45,13 @@ export function validateWarrantyData(input: unknown): ValidationResult {
   const email = typeof data.email === 'string' ? data.email.trim().toLowerCase() : '';
   const ville = typeof data.ville === 'string' ? data.ville.trim() : '';
   const type = data.type as ProductType;
-  const consent = Boolean(data.consent);
+  const consent = data.consent === true;
 
-  if (!nom || nom.length < 2) {
+  if (!nom || nom.length < 2 || nom.length > 100) {
     errors.nom = 'Le nom est obligatoire (au moins 2 caractères) / الاسم العائلي إجباري';
   }
 
-  if (!prenom || prenom.length < 2) {
+  if (!prenom || prenom.length < 2 || prenom.length > 100) {
     errors.prenom = 'Le prénom est obligatoire (au moins 2 caractères) / الاسم الشخصي إجباري';
   }
 
@@ -59,7 +59,7 @@ export function validateWarrantyData(input: unknown): ValidationResult {
     errors.telephone = 'Numéro de téléphone marocain invalide / رقم هاتف مغربي غير صالح';
   }
 
-  if (!email || !validateEmail(email)) {
+  if (!email || email.length > 254 || !validateEmail(email)) {
     errors.email = 'Adresse e-mail invalide / عنوان البريد الإلكتروني غير صالح';
   }
 

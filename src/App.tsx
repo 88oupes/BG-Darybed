@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   CITIES,
   MATTRESS_MODELS,
@@ -171,6 +171,7 @@ export default function App() {
     return Object.keys(errs).length === 0;
   };
 
+  const submissionId = useRef(crypto.randomUUID());
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setServerError(null);
@@ -183,6 +184,7 @@ export default function App() {
 
     try {
       const payload: Record<string, unknown> = {
+        id: submissionId.current,
         nom: formData.nom.trim(),
         prenom: formData.prenom.trim(),
         telephone: formData.telephone.trim(),
@@ -213,7 +215,7 @@ export default function App() {
       } else {
         const textResp = await response.text();
         throw new Error(
-          `Réponse inattendue du serveur (${response.status} ${response.statusText}). Détails: ${textResp.slice(0, 150)}`
+          response.status === 404 ? 'Le serveur du formulaire n’est pas publié. Publiez aussi les fichiers api/ du projet corrigé.' : `Le serveur a renvoyé une réponse invalide (${response.status}). Réessayez.`
         );
       }
 
@@ -275,7 +277,7 @@ export default function App() {
         <div className="max-w-5xl mx-auto px-4 sm:px-6 h-22 sm:h-24 flex items-center justify-between">
           <div className="flex items-center">
             <img
-              src="https://res.cloudinary.com/psbqhe7h/image/upload/v1791384101/logo_dary.png"
+              src="/logo-dary.png"
               alt="Dary Bed"
               className="h-16 sm:h-20 w-auto object-contain"
             />
